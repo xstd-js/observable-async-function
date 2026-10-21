@@ -1,6 +1,6 @@
 import { ListenerResource, type EmitValue } from '@xstd/listener-resource';
 import { NONE, type None } from '@xstd/none';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { ObservableAsyncFunction } from './observable-async-function.ts';
 
 /* Tools  */
@@ -62,6 +62,28 @@ class TestSource {
 }
 
 type OnCloseTeardown = () => void;
+
+class SpyTarget extends EventTarget {
+  listenerCount: number = 0;
+
+  override addEventListener(
+    type: string,
+    callback: EventListenerOrEventListenerObject | null,
+    options?: AddEventListenerOptions | boolean,
+  ): void {
+    this.listenerCount++;
+    super.addEventListener(type, callback, options);
+  }
+
+  override removeEventListener(
+    type: string,
+    callback: EventListenerOrEventListenerObject | null,
+    options?: EventListenerOptions | boolean,
+  ): void {
+    this.listenerCount--;
+    super.removeEventListener(type, callback, options);
+  }
+}
 
 function mapToStringResource(listener: ListenerResource<number>): ListenerResource<string> {
   return new ListenerResource<string>((emit: EmitValue<string>): OnCloseTeardown => {
@@ -254,6 +276,181 @@ describe('ObservableAsyncFunction', () => {
         expect(received).toEqual([]);
 
         await listener.close(); // the consumer is responsible for closing it
+      });
+    });
+
+    describe('fromEventTarget', () => {
+      test('emits the dispatched events', async () => {
+        const target: EventTarget = new EventTarget();
+        const source: ObservableAsyncFunction<Event> = ObservableAsyncFunction.fromEventTarget(
+          target,
+          'pulse',
+        );
+
+        const controller: AbortController = new AbortController();
+        const listener: ListenerResource<Event> = await source.call(controller.signal);
+        const nextPromise: Promise<Event> = listener.next({ signal: controller.signal });
+        await flush();
+
+        const event: Event = new Event('pulse');
+        target.dispatchEvent(event);
+        await flush();
+
+        expect(await nextPromise).toBe(event); // the dispatched event instance itself
+
+        await listener.close();
+      });
+
+      test('emits the events with the provided event type', async () => {
+        const target: EventTarget = new EventTarget();
+        const source: ObservableAsyncFunction<CustomEvent<unknown>> =
+          ObservableAsyncFunction.fromEventTarget<CustomEvent<unknown>>(target, 'message');
+
+        const controller: AbortController = new AbortController();
+        const listener: ListenerResource<CustomEvent<unknown>> = await source.call(
+          controller.signal,
+        );
+        const nextPromise: Promise<CustomEvent<unknown>> = listener.next({
+          signal: controller.signal,
+        });
+        await flush();
+
+        target.dispatchEvent(
+          new CustomEvent<{ payload: string }>('message', {
+            detail: { payload: 'hello' },
+          }),
+        );
+        await flush();
+
+        expect((await nextPromise).detail).toEqual({ payload: 'hello' });
+
+        await listener.close();
+      });
+
+      test('supports multiple independent subscriptions', async () => {
+        const target: SpyTarget = new SpyTarget();
+        const source: ObservableAsyncFunction<Event> = ObservableAsyncFunction.fromEventTarget(
+          target,
+          'pulse',
+        );
+
+        const listenerA: ListenerResource<Event> = await source.call(new AbortController().signal);
+        const listenerB: ListenerResource<Event> = await source.call(new AbortController().signal);
+        await flush();
+        expect(target.listenerCount).toBe(2);
+
+        const nextA: Promise<Event> = listenerA.next();
+        const nextB: Promise<Event> = listenerB.next();
+        await flush();
+        const event: Event = new Event('pulse');
+        target.dispatchEvent(event);
+        await flush();
+
+        expect(await nextA).toBe(event);
+        expect(await nextB).toBe(event);
+
+        await listenerA.close();
+        expect(target.listenerCount).toBe(1); // only A's listener is removed
+
+        const nextB2: Promise<Event> = listenerB.next();
+        await flush();
+        const event2: Event = new Event('pulse');
+        target.dispatchEvent(event2);
+        await flush();
+
+        expect(await nextB2).toBe(event2); // B keeps receiving the events
+
+        await listenerB.close();
+        expect(target.listenerCount).toBe(0);
+      });
+
+      test('removes the listener when the resource is closed', async () => {
+        const target: SpyTarget = new SpyTarget();
+        const source: ObservableAsyncFunction<Event> = ObservableAsyncFunction.fromEventTarget(
+          target,
+          'pulse',
+        );
+
+        const listener: ListenerResource<Event> = await source.call(new AbortController().signal);
+        await flush();
+        expect(target.listenerCount).toBe(1);
+
+        await listener.close();
+        expect(target.listenerCount).toBe(0);
+      });
+    });
+
+    describe('interval', () => {
+      test('emits a void value at each tick', async () => {
+        vi.useFakeTimers();
+        try {
+          const source: ObservableAsyncFunction<void> = ObservableAsyncFunction.interval(10);
+
+          const listener: ListenerResource<void> = await source.call(new AbortController().signal);
+          const nextPromise: Promise<void> = listener.next();
+          await vi.advanceTimersByTimeAsync(10);
+
+          expect(await nextPromise).toBeUndefined();
+
+          await listener.close();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      test('supports multiple independent intervals', async () => {
+        vi.useFakeTimers();
+        try {
+          const source: ObservableAsyncFunction<void> = ObservableAsyncFunction.interval(10);
+
+          const listenerA: ListenerResource<void> = await source.call(new AbortController().signal);
+          const listenerB: ListenerResource<void> = await source.call(new AbortController().signal);
+          let countA: number = 0;
+          let countB: number = 0;
+          listenerA.listen((): void => {
+            countA++;
+          });
+          listenerB.listen((): void => {
+            countB++;
+          });
+
+          await vi.advanceTimersByTimeAsync(30); // 3 ticks
+          expect(countA).toBe(3);
+          expect(countB).toBe(3);
+
+          await listenerA.close();
+
+          await vi.advanceTimersByTimeAsync(30); // 3 more ticks
+          expect(countA).toBe(3); // A's interval is cleared
+          expect(countB).toBe(6); // B's interval keeps ticking
+
+          await listenerB.close();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      test('clears the interval when the resource is closed', async () => {
+        vi.useFakeTimers();
+        try {
+          const source: ObservableAsyncFunction<void> = ObservableAsyncFunction.interval(10);
+
+          const listener: ListenerResource<void> = await source.call(new AbortController().signal);
+          let count: number = 0;
+          listener.listen((): void => {
+            count++;
+          });
+
+          await vi.advanceTimersByTimeAsync(35); // 3 ticks
+          const countAtClose: number = count;
+
+          await listener.close();
+
+          await vi.advanceTimersByTimeAsync(100); // 10 ticks would have fired
+          expect(count).toBe(countAtClose); // no tick after the close
+        } finally {
+          vi.useRealTimers();
+        }
       });
     });
   });

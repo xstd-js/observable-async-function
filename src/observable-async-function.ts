@@ -226,6 +226,65 @@ export class ObservableAsyncFunction<
   }
 
   /**
+   * Creates an observable async function emitting the events of the given type dispatched by the provided `EventTarget`.
+   *
+   * Each call registers a new listener on the target, and closing the established resource removes it.
+   *
+   * @template GEvent - The type of the dispatched events (e.g. `MouseEvent` for `'click'`).
+   * @param target - The `EventTarget` to listen to.
+   * @param type - The type of the events to listen to (e.g. `'click'`).
+   * @returns A new observable async function emitting the dispatched events.
+   *
+   * @example
+   * ```ts
+   * const clicks: ObservableAsyncFunction<MouseEvent> =
+   *   ObservableAsyncFunction.fromEventTarget<MouseEvent>(button, 'click');
+   *
+   * for await (const click of clicks.values(controller.signal)) {
+   *   console.log(click.clientX);
+   * }
+   * ```
+   */
+  static fromEventTarget<GEvent extends Event>(
+    target: EventTarget,
+    type: string,
+  ): ObservableAsyncFunction<GEvent> {
+    return new ObservableAsyncFunction<GEvent>((): ListenerResource<GEvent> => {
+      return new ListenerResource<GEvent>((emit: EmitValue<GEvent>): OnCloseResource => {
+        target.addEventListener(type, emit as EventListenerOrEventListenerObject);
+        return (): void =>
+          target.removeEventListener(type, emit as EventListenerOrEventListenerObject);
+      });
+    });
+  }
+
+  /**
+   * Creates an observable async function emitting a value at a regular interval.
+   *
+   * Each call starts a new interval, and closing the established resource clears it.
+   *
+   * @param time - The delay in milliseconds between each emission.
+   * @returns A new observable async function emitting a `void` value every `time` milliseconds.
+   *
+   * @example
+   * ```ts
+   * const heartbeat: ObservableAsyncFunction<void> = ObservableAsyncFunction.interval(1000);
+   *
+   * for await (const _ of heartbeat.values(controller.signal)) {
+   *   console.log('heartbeat'); // every second
+   * }
+   * ```
+   */
+  static interval(time: number): ObservableAsyncFunction<void> {
+    return new ObservableAsyncFunction<void>((): ListenerResource<void> => {
+      return new ListenerResource<void>((emit: EmitValue<void>): OnCloseResource => {
+        const intervalId: ReturnType<typeof setInterval> = setInterval(emit, time);
+        return (): void => clearInterval(intervalId);
+      });
+    });
+  }
+
+  /**
    * Maps the arguments of this observable async function into the arguments of the returned one.
    *
    * @template GNewArguments - The tuple type of the new arguments.
