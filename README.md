@@ -188,7 +188,7 @@ for await (const _ of heartbeat.values(controller.signal)) {
 
 #### Instance methods
 
-The transform operators (`map`, `mapFilter`, `filter`, `distinct`) share the same derivation semantics: each call of the derived function establishes the upstream resource then subscribes to it; the derived resource is closed when its upstream closes, and closing it closes the upstream. The transform callbacks are invoked synchronously for each upstream value and must not throw: the dispatch being fail-fast, a thrown error is rethrown to the upstream emitter, skipping the remaining listeners.
+The transform operators (`map`, `mapFilter`, `filter`, `distinct`) share the same derivation semantics: each call of the derived function establishes the upstream resource then subscribes to it; the derived resource is closed when its upstream closes, and closing it closes the upstream. The transform callbacks are invoked synchronously for each upstream value. A thrown error is treated as a critical error interrupting the emission chain: the chain is closed with the thrown error as close reason — observable through rejected `values`/`forEach` iterations or `closeSignal.reason` — and it never escapes to the upstream emitter.
 
 ##### `call`
 

@@ -8,7 +8,7 @@ import { EQUAL_FUNCTION_STRICT_EQUAL, type EqualFunction } from '@xstd/equal-fun
 import {
   type EmitValue,
   ListenerResource,
-  type ListenerResourceTOIteratorOptions,
+  type ListenerResourceToIteratorOptions,
 } from '@xstd/listener-resource';
 import type { MapFunction, MapFunctionArguments } from '@xstd/map-function';
 import { NONE, type None } from '@xstd/none';
@@ -17,7 +17,8 @@ import type { OnCloseResource } from '@xstd/resource';
 /**
  * A function transforming the values emitted by an upstream `ListenerResource` into values emitted downstream.
  *
- * Called synchronously for each upstream value.
+ * Called synchronously for each upstream value. A thrown error is treated as a critical error:
+ * the emission chain is interrupted and closed with the thrown error as close reason.
  *
  * @template GIn - The type of the upstream values.
  * @template GOut - The type of the downstream values.
@@ -25,6 +26,7 @@ import type { OnCloseResource } from '@xstd/resource';
  * @param value - The upstream value.
  * @param emit - A function to broadcast the transformed value downstream.
  * @param args - The arguments passed to the derived function's call.
+ * @throws {unknown} Treat a throw as a critical error: it closes the emission chain with it.
  */
 interface ObservableAsyncFunctionTransformOutputFunction<
   GIn,
@@ -92,7 +94,7 @@ export interface ObservableAsyncFunctionFilterFunctionWithSubType<
  * @template signal - An `AbortSignal` stopping the iteration when aborted.
  * @template queueingPolicy - Optional. Controls the buffering of the values emitted while the consumer is busy processing the previous one. Defaults to `EdgeQueuingPolicy`, which keeps only the latest value.
  */
-export interface ObservableAsyncFunctionToIteratorOptions extends ListenerResourceTOIteratorOptions {
+export interface ObservableAsyncFunctionToIteratorOptions extends ListenerResourceToIteratorOptions {
   readonly signal: AbortSignal;
 }
 
@@ -403,9 +405,14 @@ export class ObservableAsyncFunction<
    * The derived resource emits the values produced by `transform`, is closed when its upstream resource
    * closes, and closing it closes the upstream resource.
    *
-   * The `transform` function is invoked synchronously for each upstream value: it must not throw.
-   * The dispatch being fail-fast, a thrown error is rethrown to the upstream emitter, skipping the
-   * remaining listeners.
+   * The `transform` function is invoked synchronously for each upstream value. A thrown error is
+   * treated as a critical error interrupting the emission chain: the upstream resource is closed with
+   * the thrown error as close reason, cascading to the derived resource. The error never escapes to
+   * the upstream emitter and is observable downstream instead: rejected `next()`, `values()` or
+   * `forEach()`, or `closeSignal.reason`.
+   *
+   * Any error thrown during the dispatch of a value through this stage closes the chain with it,
+   * including errors thrown by downstream listeners reached through `emit`.
    *
    * @template GNewValue - The type of the emitted values.
    * @param transform - A function transforming an upstream value into zero or more downstream values.
@@ -436,6 +443,9 @@ export class ObservableAsyncFunction<
   /**
    * Maps each emitted value through the provided function.
    *
+   * A thrown error of the `map` function is treated as a critical error: the emission chain is
+   * interrupted and closed with that error as close reason.
+   *
    * @template GNewValue - The type of the emitted values.
    * @param map - A function transforming an incoming value into an outgoing value.
    * @returns A new observable async function emitting the mapped values.
@@ -455,6 +465,9 @@ export class ObservableAsyncFunction<
 
   /**
    * Maps each emitted value through the provided function, dropping the values mapped to {@link NONE}.
+   *
+   * A thrown error of the `mapFilter` function is treated as a critical error: the emission chain is
+   * interrupted and closed with that error as close reason.
    *
    * @template GNewValue - The type of the emitted values.
    * @param mapFilter - A function returning an outgoing value, or {@link NONE} to filter the value out.
@@ -484,6 +497,9 @@ export class ObservableAsyncFunction<
   /**
    * Filters the emitted values through the provided type-guard predicate, narrowing them.
    *
+   * A thrown error of the `filter` function is treated as a critical error: the emission chain is
+   * interrupted and closed with that error as close reason.
+   *
    * @template GNewValue - The narrowed type of the emitted values.
    * @param filter - A type-guard predicate. Values for which it returns `false` are filtered out.
    * @returns A new observable async function emitting only the values satisfying the predicate, narrowed to `GNewValue`.
@@ -500,6 +516,9 @@ export class ObservableAsyncFunction<
   ): ObservableAsyncFunction<GNewValue, GArguments>;
   /**
    * Filters the emitted values through the provided predicate.
+   *
+   * A thrown error of the `filter` function is treated as a critical error: the emission chain is
+   * interrupted and closed with that error as close reason.
    *
    * @param filter - A predicate. Values for which it returns `false` are filtered out.
    * @returns A new observable async function emitting only the values satisfying the predicate.
@@ -529,6 +548,10 @@ export class ObservableAsyncFunction<
    *
    * The equality state is maintained _per subscription_: each call of the returned function gets its own
    * deduplication state, and the first value received by a subscription is always emitted.
+   *
+   * A thrown error of the `equal` function is treated as a critical error interrupting the emission
+   * chain: the upstream resource is closed with the thrown error as close reason, cascading to the
+   * derived resource.
    *
    * @param equal - The equality function applied to consecutive values. Defaults to strict equality (`===`).
    * @returns A new observable async function emitting only the values differing from the previous one.
@@ -624,7 +647,7 @@ export class ObservableAsyncFunction<
 
     await using listener: ListenerResource<GValue> = await this.call(signal, ...args);
 
-    yield* listener.iterator({ signal, ...options });
+    yield* listener.values({ signal, ...options });
   }
 
   /**

@@ -657,6 +657,57 @@ describe('ObservableAsyncFunction', () => {
 
         await expect(mapped.call(new AbortController().signal)).rejects.toThrow();
       });
+
+      test('closes the chain with the thrown error when the map function throws', async () => {
+        const source: TestSource = new TestSource();
+        const error: Error = new Error('map error');
+        const mapped: ObservableAsyncFunction<number> = source.fnc.map((value: number): number => {
+          if (value === 2) {
+            throw error;
+          }
+          return value;
+        });
+
+        const controller: AbortController = new AbortController();
+        const listener: ListenerResource<number> = await mapped.call(controller.signal);
+
+        const received: number[] = [];
+        listener.listen((value: number): void => {
+          received.push(value);
+        });
+
+        source.emit(1);
+        await flush();
+
+        expect(received).toEqual([1]);
+
+        expect((): void => source.emit(2)).not.toThrow(); // the error does not escape to the emitter
+        await flush();
+
+        expect(received).toEqual([1]); // the chain is interrupted: no more values flow
+        expect(listener.closeSignal.aborted).toBe(true);
+        expect(listener.closeSignal.reason).toBe(error);
+        expect(source.closeCount).toBe(1); // the upstream was closed too
+      });
+
+      test('makes the thrown error observable by the downstream consumer', async () => {
+        const source: TestSource = new TestSource();
+        const error: Error = new Error('map error');
+        const mapped: ObservableAsyncFunction<number> = source.fnc.map((value: number): number => {
+          if (value === 2) {
+            throw error;
+          }
+          return value;
+        });
+
+        const controller: AbortController = new AbortController();
+        const listener: ListenerResource<number> = await mapped.call(controller.signal);
+        const nextPromise: Promise<number> = listener.next({ signal: controller.signal });
+
+        source.emit(2);
+
+        await expect(nextPromise).rejects.toBe(error);
+      });
     });
 
     describe('mapFilter', () => {
@@ -850,6 +901,34 @@ describe('ObservableAsyncFunction', () => {
 
         await listenerA.close();
         await listenerB.close();
+      });
+
+      test('closes the chain with the thrown error when the equality function throws', async () => {
+        const source: TestSource = new TestSource();
+        const error: Error = new Error('equal error');
+        const distinct: ObservableAsyncFunction<number> = source.fnc.distinct(
+          (a: number, b: number): boolean => {
+            if (a === 3) {
+              throw error;
+            }
+            return a === b;
+          },
+        );
+
+        const controller: AbortController = new AbortController();
+        const listener: ListenerResource<number> = await distinct.call(controller.signal);
+
+        source.emit(1); // first value: the equality function is not invoked
+        await flush();
+
+        expect(listener.closeSignal.aborted).toBe(false);
+
+        expect((): void => source.emit(3)).not.toThrow(); // the error does not escape to the emitter
+        await flush();
+
+        expect(listener.closeSignal.aborted).toBe(true);
+        expect(listener.closeSignal.reason).toBe(error);
+        expect(source.closeCount).toBe(1); // the upstream was closed too
       });
     });
 
