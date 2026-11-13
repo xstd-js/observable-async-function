@@ -242,6 +242,42 @@ describe('ObservableAsyncFunction', () => {
         expect(aClosed).toBe(true);
       });
 
+      test('closes a source which resolves after the abort signal', async () => {
+        let lateSourceClosed: boolean = false;
+        const late: ObservableAsyncFunction<number> = new ObservableAsyncFunction<number>(
+          async (): Promise<ListenerResource<number>> => {
+            await sleep(50); // ignores the abort signal
+            return new ListenerResource<number>((): (() => void) => {
+              return (): void => {
+                lateSourceClosed = true;
+              };
+            });
+          },
+        );
+        const quick: ObservableAsyncFunction<number> = new ObservableAsyncFunction<number>(
+          async (signal: AbortSignal): Promise<ListenerResource<number>> => {
+            await sleep(1000, signal); // respects the abort signal
+            return new ListenerResource<number>((): void => {});
+          },
+        );
+
+        const merged: ObservableAsyncFunction<number> = ObservableAsyncFunction.merge([
+          late,
+          quick,
+        ]);
+        const controller: AbortController = new AbortController();
+        const callPromise: Promise<ListenerResource<number>> = merged.call(controller.signal);
+        await flush();
+        controller.abort();
+
+        await expect(callPromise).rejects.toThrow();
+        await flush();
+        expect(lateSourceClosed).toBe(false); // not established yet
+
+        await sleep(60); // the late source resolves after the abort
+        expect(lateSourceClosed).toBe(true); // its resource was discarded and closed
+      });
+
       test('rejects when the call signal aborts during the setup', async () => {
         const slow: ObservableAsyncFunction<number> = new ObservableAsyncFunction<number>(
           async (signal: AbortSignal): Promise<ListenerResource<number>> => {
@@ -592,7 +628,7 @@ describe('ObservableAsyncFunction', () => {
       });
     });
 
-    describe('shareConcurentCalls', () => {
+    describe('shareConcurrentCalls', () => {
       test('shares concurrent calls with the same key', async () => {
         let callCount: number = 0;
         const source: ObservableAsyncFunction<number> = new ObservableAsyncFunction<number>(
@@ -605,7 +641,7 @@ describe('ObservableAsyncFunction', () => {
           },
         );
 
-        const shared: ObservableAsyncFunction<number> = source.shareConcurentCalls({
+        const shared: ObservableAsyncFunction<number> = source.shareConcurrentCalls({
           keyGenerator: (): string => 'key',
         });
 
@@ -901,6 +937,49 @@ describe('ObservableAsyncFunction', () => {
 
         await listenerA.close();
         await listenerB.close();
+      });
+
+      test('rejects when the upstream resolves closed', async () => {
+        const closed: ObservableAsyncFunction<number> = new ObservableAsyncFunction<number>(
+          async (): Promise<ListenerResource<number>> => {
+            const resource: ListenerResource<number> = new ListenerResource<number>((): void => {});
+            await resource.close();
+            return resource;
+          },
+        );
+
+        const distinct: ObservableAsyncFunction<number> = closed.distinct();
+
+        await expect(distinct.call(new AbortController().signal)).rejects.toThrow();
+      });
+
+      test('supports NONE as an emitted value', async () => {
+        const source: ObservableAsyncFunction<number | None> = new ObservableAsyncFunction<
+          number | None
+        >(async (): Promise<ListenerResource<number | None>> => {
+          return new ListenerResource<number | None>((emit: EmitValue<number | None>): void => {
+            setTimeout((): void => {
+              emit(NONE);
+              emit(NONE);
+              emit(1);
+            }, 0); // must emit after establishment
+          });
+        });
+
+        const distinct: ObservableAsyncFunction<number | None> = source.distinct();
+
+        const controller: AbortController = new AbortController();
+        const listener: ListenerResource<number | None> = await distinct.call(controller.signal);
+
+        const received: (number | None)[] = [];
+        listener.listen((value: number | None): void => {
+          received.push(value);
+        });
+        await flush();
+
+        expect(received).toEqual([NONE, 1]); // NONE is a regular value: the second occurrence is filtered out
+
+        await listener.close();
       });
 
       test('closes the chain with the thrown error when the equality function throws', async () => {
