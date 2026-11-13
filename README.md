@@ -13,7 +13,7 @@
 
 ## @xstd/observable-async-function
 
-AsyncFunction mixed with ListenerResource.
+An async function whose call establishes a live `ListenerResource` emitting values over time.
 
 ## 📦 Installation
 
@@ -59,7 +59,7 @@ for await (const event of events.values(controller.signal)) {
 
 Represents an asynchronous and abortable function whose call establishes a `ListenerResource` emitting values over time.
 
-It combines [`@xstd/async-function`](https://www.npmjs.com/package/@xstd/async-function) with [`@xstd/listener-resource`](https://www.npmjs.com/package/@xstd/listener-resource): every call establishes a fresh live resource, while the async function toolbox (`then`, `catch`, `mapArguments`, `shareConcurentCalls`...) keeps operating on the function itself.
+It combines [`@xstd/async-function`](https://www.npmjs.com/package/@xstd/async-function) with [`@xstd/listener-resource`](https://www.npmjs.com/package/@xstd/listener-resource): every call establishes a fresh live resource, while the async function toolbox (`then`, `catch`, `mapArguments`, `shareConcurrentCalls`...) keeps operating on the function itself.
 
 - **Type parameters**
   - `GValue` — The type of the emitted values.
@@ -289,10 +289,10 @@ const safe: ObservableAsyncFunction<number | string> = ticks.catch(
 );
 ```
 
-##### `shareConcurentCalls` (experimental)
+##### `shareConcurrentCalls` (experimental)
 
 ```ts
-shareConcurentCalls(options: ShareConcurentCallsOptions<GArguments>): ObservableAsyncFunction<GValue, GArguments>
+shareConcurrentCalls(options: ShareConcurrentCallsOptions<GArguments>): ObservableAsyncFunction<GValue, GArguments>
 ```
 
 Returns a new observable async function that deduplicates concurrent calls sharing the same key: while a call is in-flight, subsequent calls with the same key await the same underlying resource instead of triggering a new call.
@@ -302,7 +302,7 @@ Returns a new observable async function that deduplicates concurrent calls shari
 - **Returns** A new observable async function sharing concurrent calls with identical keys.
 
 ```ts
-const shared = ticks.shareConcurentCalls({ keyGenerator: () => 'ticks' });
+const shared = ticks.shareConcurrentCalls({ keyGenerator: () => 'ticks' });
 
 // the source is established once, both calls await the same resource:
 const [a, b] = await Promise.all([shared.call(signalA), shared.call(signalB)]);
@@ -489,7 +489,7 @@ await ticks.forEach(controller.signal, (value: number): void => console.log(valu
 | `ObservableAsyncFunctionMapFilterFunction<GIn, GOut, GArguments>`                     | `(value: GIn, ...args: GArguments) => GOut \| None` — maps a value, or returns `NONE` to filter it out.     |
 | `ObservableAsyncFunctionFilterFunction<GValue, GArguments>`                           | `(value: GValue, ...args: GArguments) => boolean` — predicate deciding whether a value is forwarded.        |
 | `ObservableAsyncFunctionFilterFunctionWithSubType<GIn, GOut extends GIn, GArguments>` | `(value: GIn, ...args: GArguments) => value is GOut` — type-guard predicate narrowing the forwarded values. |
-| `ObservableAsyncFunctionToIteratorOptions`                                            | `ListenerResourceTOIteratorOptions` with a required `signal` — the options of `values` and `forEach`.       |
+| `ObservableAsyncFunctionToIteratorOptions`                                            | `ListenerResourceToIteratorOptions` with a required `signal` — the options of `values` and `forEach`.       |
 
 ### 📚 Full example
 

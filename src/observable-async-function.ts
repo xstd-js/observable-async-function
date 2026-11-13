@@ -2,7 +2,7 @@ import {
   AsyncFunction,
   type AsyncFunctionThenOnFulfilledFunction,
   type AsyncFunctionThenOnRejectedFunction,
-  type ShareConcurentCallsOptions,
+  type ShareConcurrentCallsOptions,
 } from '@xstd/async-function';
 import { EQUAL_FUNCTION_STRICT_EQUAL, type EqualFunction } from '@xstd/equal-function';
 import {
@@ -182,7 +182,15 @@ export class ObservableAsyncFunction<
           await Promise.all(
             functions.map(
               async (fnc: ObservableAsyncFunction<GValue, GArguments>): Promise<void> => {
-                listeners.push(await fnc.call(sharedSignal, ...args));
+                const listener: ListenerResource<GValue> = await fnc.call(sharedSignal, ...args);
+
+                if (sharedSignal.aborted) {
+                  // the source ignored the abort signal: discard its resource
+                  await listener.close(sharedSignal.reason);
+                  throw sharedSignal.reason;
+                }
+
+                listeners.push(listener);
               },
             ),
           );
@@ -391,10 +399,10 @@ export class ObservableAsyncFunction<
    * @param options.keyGenerator - A function that generates a cache key from the call's arguments. Calls producing the same key share their result.
    * @returns A new observable async function sharing concurrent calls with identical keys.
    */
-  override shareConcurentCalls(
-    options: ShareConcurentCallsOptions<GArguments>,
+  override shareConcurrentCalls(
+    options: ShareConcurrentCallsOptions<GArguments>,
   ): ObservableAsyncFunction<GValue, GArguments> {
-    return new ObservableAsyncFunction<GValue, GArguments>(super.shareConcurentCalls(options));
+    return new ObservableAsyncFunction<GValue, GArguments>(super.shareConcurrentCalls(options));
   }
 
   /* ListenerResource  */
@@ -568,11 +576,15 @@ export class ObservableAsyncFunction<
       async (signal: AbortSignal, ...args: GArguments): Promise<ListenerResource<GValue>> => {
         const listener: ListenerResource<GValue> = await this.call(signal, ...args);
 
-        let lastValue: GValue | None = NONE;
+        listener.throwIfClosed();
+
+        let hasLastValue: boolean = false;
+        let lastValue: GValue;
 
         return new ListenerResource<GValue>((emit: EmitValue<GValue>): OnCloseResource | void => {
           listener.listen((value: GValue): void => {
-            if (lastValue === NONE || !equal(value, lastValue)) {
+            if (!hasLastValue || !equal(value, lastValue as GValue)) {
+              hasLastValue = true;
               lastValue = value;
               emit(value);
             }
